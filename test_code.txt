@@ -1,0 +1,1076 @@
+/* USER CODE BEGIN Header */
+/**
+  ******************************************************************************
+  * @file           : main.c
+  * @brief          : Main program body
+  ******************************************************************************
+  * @attention
+  *
+  * Copyright (c) 2023 STMicroelectronics.
+  * All rights reserved.
+  *
+  * This software is licensed under terms that can be found in the LICENSE file
+  * in the root directory of this software component.
+  * If no LICENSE file comes with this software, it is provided AS-IS.
+  *
+  ******************************************************************************
+  */
+/* USER CODE END Header */
+/* Includes ------------------------------------------------------------------*/
+#include "main.h"
+
+/* Private includes ----------------------------------------------------------*/
+/* USER CODE BEGIN Includes */
+#include <math.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <stdbool.h>
+#include "stdint.h"
+/* USER CODE END Includes */
+
+/* Private typedef -----------------------------------------------------------*/
+/* USER CODE BEGIN PTD */
+
+/* USER CODE END PTD */
+
+/* Private define ------------------------------------------------------------*/
+/* USER CODE BEGIN PD */
+
+/* USER CODE END PD */
+
+/* Private macro -------------------------------------------------------------*/
+/* USER CODE BEGIN PM */
+
+/* USER CODE END PM */
+
+/* Private variables ---------------------------------------------------------*/
+CAN_HandleTypeDef hcan;
+
+TIM_HandleTypeDef htim2;
+
+/* USER CODE BEGIN PV */
+// PID banh xe
+uint32_t AA;
+uint32_t Encoder_A, Encoder_A_Pre, Encoder_B, Encoder_B_Pre;
+float Kb = 900; //1935.5;    // Antiwindup
+float SP_WL, SP_WR;  // Setpoint WR vs WL
+float sum_A[20], sum_B[20];
+float RPM_Avg_WL, RPM_Avg_WR;
+int32_t delta_A, delta_B;
+float SP_WL_Fake, SP_WR_Fake;
+float RPM_WL_Math, RPM_WR_Math;
+float SP_WL_Fake_2;
+float WL_RPM, WR_RPM;
+float WRL_Max = 1.75;  // rad/s
+
+uint8_t dirs;
+
+// PID vi tri va bam goc
+float V_counst = 0.08;
+float V_max = 0.1125;
+float EXY_2;
+float Toa_do_X;
+float Toa_do_Y;
+float Var_SS_Theta;
+float EX_Test, EY_Test;
+
+// Cam bien
+float Nguong_tren_set = 70;
+
+// Bien thoi gian tong cua he welding mobile Robot
+float Time_Total = 0;
+float Time_Interrupt = 0.005;
+
+// Thong so phan cung
+uint16_t Pulse_Per_Round = 2688;
+float R_Wheles = 0.0475;
+float Khoang_tam_den_banh = 0.1825;// 0.365;
+uint16_t HIGH_Limit_PWM = 999;
+uint16_t LOW_Limit_PWM = 0;
+
+// CAN BUS DATA
+uint8_t Data_WR[8], Data_WL[8], Data_Start[8];
+float PWM_WR, PWM_WL;
+uint8_t Data_ADC_1[8], Data_ADC_2[8], Data_RPM_WL[8], Data_RPM_WR[8];
+CAN_TxHeaderTypeDef TX_Header;
+CAN_RxHeaderTypeDef RX_Header;
+CAN_FilterTypeDef Filetr_Can;
+uint32_t Mail_box[12];
+uint8_t Data_RX[10][8], Data_TX[10][8];
+float Data_RX_F[20], Data_TX_F[20];
+
+// Cac bien phu
+	//1->
+float GT_Convert_radian = 0.1047197551;
+float PI = 3.1415926535897932;
+	//2->
+int8_t bit_dao_chieu;
+	//3->
+float M1, M2, M3, M4;
+float K1, K2;
+float Fake_Error_Y;
+
+uint16_t pwm_ao;
+
+
+//  *************************************** Cac struct *****************************************/
+// PID
+struct PID_Ver_1
+{
+	float HIGH, LOW;
+	float Kp, Ki, Kd;
+	float Up, Up_1;
+	double Ui, Ui_1;
+	float Ud, Ud_1;
+	double Ui_Antiwindup;
+	uint16_t Out_PWM;
+	double Temp_PWM;
+	float Out_fPWM;
+	float Ti_le_WR_WL;
+	float Kb;
+
+} PID_wl, PID_wr, PID_x, PID_y;
+
+// Dong hoc Matlab
+struct Kinematic_Matlab
+{
+	float vel, x_dot, y_dot, x, y, theta, theta_dot, b;
+	float x1, y1, x1_dot, y1_dot, w1;
+	float ax1, ay1;
+	float w, Ratio_WR_WL;
+	//////////////Quy hoach quy dao//////////////
+	float theta_Degree;
+	float theta_1;
+	float x_QH_welding, y_QH_welding;
+	//////////////Real Time///////////
+	float vel_Real, x_dot_Real, y_dot_Real, w_Real;
+	float x_Real, y_Real, x_welding_Real, y_welding_Real;
+	float Theta_Fake;
+	// He mm
+	float x_mm_Real, y_mm_Real, x1_mm, y1_mm;
+
+}Kinematic_Matlab_a;
+
+// Sensor
+struct Sensor
+{
+	// Cam bien
+	float xA, yA;
+	float xB, yB;
+	float Theta_Sensor, Theta_Sensor_Degrees;
+	// Khoang cach cam bien so voi diem tam xe
+	float SS_Xa_1, SS_Xa_2;          // He mm
+	float SS_Xa_1_Met, SS_Xa_2_Met;  // He met
+
+	// Gia tri cua ADC sau khi tinh ra mm
+	float Khoang_cach_A1, Khoang_cach_A2;   // He mm
+	float A1_MET, A2_MET;   // He met
+
+	// Gia tri ADC
+	int16_t ADC_A1, ADC_A2;
+	int16_t ADC_Value[2];
+
+	float ADC_AVG[2], ADC_AVG_Pre[2], ADC_Filter[2], ADC_Filter_Pre[2];
+	int16_t Nguong_tren[2], Nguong_duoi[2];
+	int16_t Counter_nguong[2], Counter_Timer;
+
+	// Gia tri trung binh
+	float Avg_ADC_A1, Avg_ADC_A2;     // Gia tri trung binh
+	float Sum_A1[20], Sum_A2[20];    // Noi chua mang ga tri
+
+	float theta_XY, theta_XY_Pre;
+
+}Sensor_1;
+
+// Error
+struct error_PID
+{
+	double ek, ek_1;
+} Error_wl, Error_wr, Error_x, Error_y;
+
+// Thong so PID he so theta
+struct PID_Theta
+{
+	float Kp_D, Ki_D, Kd_D;    // Chon PID theo khoang cach
+	float Kp_Parallel, Ki_Parallel, Kd_Parallel;   // Chon PID bam song song voi tuong
+
+	// Ti so van toc
+	float Cv;
+}PID_theta;
+
+// AC Servo
+struct AC_Servo
+{
+	int32_t Counter_AC, Diem_dung;
+	int8_t DIR;
+	float RPM;
+	float Goc;
+	float Khoang_cach_mm;
+
+}AC_Servo_1, Stepper_1;
+
+// Can bus
+struct CANBUS
+{
+	CAN_TxHeaderTypeDef TX_Header;
+	CAN_RxHeaderTypeDef RX_Header;
+	CAN_FilterTypeDef Filetr_Can;
+	uint32_t Mail_box[12];
+	uint8_t Data_RX[10][8], Data_TX[10][8];
+	float Data_RX_F[20], Data_TX_F[20];
+}Can_bus;
+
+// POINTER
+struct PID_Ver_1* PID_WL = &PID_wl;
+struct PID_Ver_1* PID_WR = &PID_wr;
+struct error_PID* Error_WL = &Error_wl;
+struct error_PID* Error_WR = &Error_wr;
+struct error_PID* Error_X = &Error_x;
+struct error_PID* Error_Y = &Error_y;
+struct PID_Ver_1* PID_X = &PID_x;
+struct PID_Ver_1* PID_Y = &PID_y;
+struct Kinematic_Matlab* Kinematic_Matlab_A = &Kinematic_Matlab_a;
+struct Sensor* SS = &Sensor_1;
+struct PID_Theta* PID_t = &PID_theta;
+struct AC_Servo* Ser = &AC_Servo_1;
+struct AC_Servo* Step = &Stepper_1;
+struct CANBUS* Can = &Can_bus;
+
+/* USER CODE END PV */
+
+/* Private function prototypes -----------------------------------------------*/
+void SystemClock_Config(void);
+static void MX_GPIO_Init(void);
+static void MX_CAN_Init(void);
+static void MX_TIM2_Init(void);
+/* USER CODE BEGIN PFP */
+
+/* USER CODE END PFP */
+
+/* Private user code ---------------------------------------------------------*/
+/* USER CODE BEGIN 0 */
+// printf
+//#ifdef __GNUC__
+//#define PUTCHAR_PROTOTYPE int __io_putchar(int ch)
+//#else
+//#define PUTCHAR_PROTOTYPE int fputc(int ch, FILE *f)
+//#endif
+//
+//PUTCHAR_PROTOTYPE
+//{
+//  HAL_UART_Transmit(&huart1, (uint8_t *)&ch, 1, HAL_MAX_DELAY);
+//  return ch;
+//}
+
+/*                                  CAC FUNCTION                                */
+//**Cac ham khoi tao**//
+void Init_PID()
+{
+	// PID khoang cach
+	PID_X -> Kp = 0.23;
+	PID_X -> Ki = 0.05;
+	PID_X -> Kd = 0.12;
+	// PID goc
+	PID_t->Kp_D = 0.0305;
+	PID_t->Ki_D = 0;
+	PID_t->Kd_D = 0.015;
+
+	PID_t->Kp_Parallel = 0.032;
+	PID_t->Ki_Parallel = 0;
+	PID_t->Kd_Parallel = 0.0025;
+	// PID 1 XY_Theta 0.018 0 0.0012   Theta_Desired 0.0095 0 0.0012
+                       // Goc lon 0.001 0 0.0012
+	      // Goc theta teo khoang cach
+			PID_Y -> Kp = PID_t->Kp_D;
+			PID_Y -> Ki = PID_t->Ki_D;
+			PID_Y -> Kd = PID_t->Kd_D;
+
+		  // Goc theta theo bam song song voi tuong
+			PID_Y -> Kp = PID_t->Kp_Parallel;  //Kp= 0.03, Kd = 0.18  || Kp = 0.0339, Ki = 0.189
+			PID_Y -> Ki = PID_t->Ki_Parallel;
+			PID_Y -> Kd = PID_t->Kd_Parallel;
+
+			// v = 0.2, k1 0.05 0 0.012
+			/*
+			 * So ghi chep thong so PID
+			 * Kp   Ki   Kd        ||      Kp   Ki   Kd
+			 *  PID_t->Kp_D = 0.06325;
+				PID_t->Ki_D = 0;
+				PID_t->Kd_D = 0.015;
+			 *
+			 *
+			 *
+			 */
+}
+
+void Initial_Cam_bien()
+{
+	SS->SS_Xa_1 = 245;     // Tam xe dem CB dau
+	SS->SS_Xa_2 = 75;      // Tam xe dem CB cuoi
+	SS->Nguong_tren[0] = 80;
+	SS->Nguong_duoi[0] = 20;
+	SS->Nguong_tren[1] = 80;
+	SS->Nguong_duoi[1] = 20;
+}
+
+/*                                  SENSOR                                */
+void Vi_tri_Cam_bien(struct Sensor* S, struct Kinematic_Matlab* Math)
+{
+	float Temp[3];
+	// Khoang cach 2 Cam bien theo phuong X cua xe
+	Temp[0] = S->SS_Xa_1 - S->SS_Xa_2;
+	//Khoang cach 2 cam bien theo phuong Y cua xe
+	Temp[1] = S->Khoang_cach_A1 - S->Khoang_cach_A2;
+	// Goc quay theta mong muon, Goc lech giua line va truc x cua xe
+	S->Theta_Sensor = atan2(Temp[1],Temp[0]);
+	S->Theta_Sensor_Degrees = S->Theta_Sensor * 180  / PI;
+	// Chuyen mm sang met
+	S->A1_MET = S->Khoang_cach_A1/1000.0;
+	S->A2_MET = S->Khoang_cach_A2/1000.0;
+	S->SS_Xa_1_Met = S->SS_Xa_1/1000.0;
+	S->SS_Xa_2_Met = S->SS_Xa_2/1000.0;
+	// Tinh toan Vi tri cua CB so vi truc toa do toan cuc
+	S->xA = Math->x_Real + S->SS_Xa_1_Met * cos(Math->theta) - (S->A1_MET + Khoang_tam_den_banh) * sin(Math->theta);
+	S->yA = Math->y_Real +  (S->A1_MET + Khoang_tam_den_banh) * cos(Math->theta) + (S->SS_Xa_1_Met * sin(Math->theta));
+}
+
+/*                                  MATLAB KINEMATIC                                */
+void Forward_Kinematic(float RPM_R, float RPM_L, struct Kinematic_Matlab* Kinematic_Matlab_A)
+{
+	// Vận tốc thưc của xe      v = ((Wr+Wl)*R)/(2)
+	Kinematic_Matlab_A->vel_Real = (RPM_R+RPM_L) * R_Wheles/2;
+	// Tốc độ quay của xe       w = ((Wr-Wl)*R)/(2*b)
+	Kinematic_Matlab_A->w_Real = ((RPM_R-RPM_L)*R_Wheles)/(2*Khoang_tam_den_banh);
+	// Góc theta thực tế theo radian
+	Kinematic_Matlab_A->theta = Kinematic_Matlab_A->theta + Kinematic_Matlab_A->w_Real *Time_Interrupt;
+	// Góc theta thực tế theo độ
+	Kinematic_Matlab_A->theta_Degree = Kinematic_Matlab_A->theta * 180 / PI;
+	// X_dot vs Y_dot thực tế
+	Kinematic_Matlab_A->x_dot_Real = Kinematic_Matlab_A->vel_Real * cos(Kinematic_Matlab_A->theta);
+	Kinematic_Matlab_A->y_dot_Real = Kinematic_Matlab_A->vel_Real * sin(Kinematic_Matlab_A->theta);
+}
+
+/*                                  PID_FUNCTION_CONTROLLER                                */
+/** Bộ antiwidup để tắt khâu tích luỹ khi nó vượt ngưỡng **/
+float Anti_Windup(float Out_PWM, uint16_t HIGH_Limit, uint16_t LOW_Limit, float Kb)
+{
+    float e_reset = 0;
+    float Ui_anti;
+
+    if (Out_PWM > HIGH_Limit)
+    {
+        e_reset = (HIGH_Limit - Out_PWM );
+    }
+    else if (Out_PWM < LOW_Limit)
+    {
+        e_reset = (LOW_Limit - Out_PWM);
+    }
+    else
+    {
+        e_reset = 0;
+    }
+        Ui_anti = Time_Interrupt * e_reset * Kb;
+
+
+    return Ui_anti;
+}
+/** PID Function  **/
+void PID_Function(float SP, float Real_Value, struct PID_Ver_1* PID, struct error_PID* er, int8_t Anti)
+{
+		/* Sai so      */
+		// PID X,Y,Theta controller
+		er -> ek = (SP - Real_Value);
+		// PID
+		// Khau P
+		PID -> Up =  PID -> Kp * er -> ek;
+		/*          Khau I     ANTI WINDUP YES or NO                  */
+		if(Anti == 0)
+		{
+			PID -> Ui = PID -> Ui_1 + PID_X -> Ki * er -> ek_1 * Time_Interrupt;
+		}
+		else if (Anti == 1)
+		{
+			PID -> Ui_Antiwindup = Anti_Windup(PID -> Temp_PWM, PID->HIGH, PID->LOW, Kb);
+			PID -> Ui = PID -> Ui_1 + PID -> Ki * Error_X -> ek_1 * Time_Interrupt + PID -> Ui_Antiwindup;
+		}
+		/*                            Khau D                                       */
+		PID -> Ud = PID -> Ud_1 * (er -> ek - er -> ek_1);
+		/*                            Output PID                               */
+		PID -> Temp_PWM = PID -> Up + PID -> Ui + PID -> Ud;    // output FLOAT
+		PID -> Out_PWM = round(PID -> Temp_PWM);                      // output UINT16_t
+		/*                      LIMIT OUTPUT                              */
+			if(PID -> Out_PWM >= PID->HIGH)
+			{
+				PID -> Out_PWM = PID->HIGH;
+			}
+			else if (PID -> Out_PWM <= PID->LOW )
+			{
+				PID -> Out_PWM = PID->LOW;
+			}
+}
+
+/*                                  QUY DAO CHO XE                               */
+void Linear_Path(float Time, struct Kinematic_Matlab* Matlab, float He_so_A, float He_so_B)
+{
+	Matlab->x1 = He_so_A * Time;
+	Matlab->y1 = He_so_B * Time;
+}
+
+/*                                  CAC FUNCTION PHU                               */
+/** Ham tinh trung binh **/
+float Average_5_times(float Var, float Temp[20])
+{
+    float sum = 0, Out_Average_Var; // Initialize sum to 0
+    for (int i = 0; i < 19; i++)
+    {
+        Temp[i] = Temp[i + 1];  // gán giá trị hiện tại vào giá trị trước
+        sum += Temp[i];        // Cộng dần các giá trị vừa lưu
+    }
+    // Gán giá trị mới nhất
+    Temp[19] = Var;
+    sum += Temp[19] ;
+    // Tính trung bình
+    Out_Average_Var = sum / 20;
+    return Out_Average_Var;
+}
+/** Tinh gia tri trung binh omega **/
+void Average_PID_Omega( uint32_t Counter_Max, float Real_RPM, float AVG_RPM, int32_t Delta, uint32_t Encoder, uint32_t Encoder_Pre, float Sum[20])
+{
+	int32_t DELTA_TEMP = 0;
+	// Lấy chênh lệch 2 khoảng Encoder
+	DELTA_TEMP = abs(Encoder - Encoder_Pre);
+	// Nếu giá trị chênh lẹch lớn hơn nữa số xung nữa vòng là vô lý nên lấy giá trị tràn trừ cho chênh lệch
+	if (DELTA_TEMP  >= 32000)   //Counter_Max / 2
+	{
+		DELTA_TEMP = Counter_Max - DELTA_TEMP;
+	}
+	//Tính giá trị RPM hiện tại
+	AVG_RPM = ((DELTA_TEMP) / (DELTA_TEMP * 4 * Time_Interrupt) * 60) * GT_Convert_radian;
+	// Tính trung bình
+	Real_RPM = Average_5_times(AVG_RPM, Sum);
+	Delta = DELTA_TEMP;
+}
+
+/*********************************************               CAN BUS                    ***************************************/
+/** Can confiure  */
+void Init_Can_bus()
+{
+	Can->TX_Header.DLC = 8;
+	Can->TX_Header.IDE = CAN_ID_STD; // 0x00 = CAN_ID_STD
+	Can->TX_Header.RTR = CAN_RTR_DATA ; //0x00 = CAN_RTR_DATA
+	Can->TX_Header.StdId = 0x103;
+
+	TX_Header.DLC = 8;
+	TX_Header.IDE = CAN_ID_STD; // 0x00 = CAN_ID_STD
+	TX_Header.RTR = CAN_RTR_DATA ; //0x00 = CAN_RTR_DATA
+	TX_Header.StdId = 0x103;
+}
+
+/** Ham nhan du lieu **/
+void HAL_CAN_RxFifo0MsgPendingCallback(CAN_HandleTypeDef *hcan)
+{
+	HAL_CAN_GetRxMessage(&hcan, CAN_RX_FIFO0, &RX_Header, Data_ADC_1);
+	if(RX_Header.StdId == 0x407)
+	{
+		// Processing Data
+		for(int i = 0; i < 8; i++)
+		{
+			Data_ADC_2[i] = Data_ADC_1[i];
+		}
+		//Data_float_1 = Combine_Data(Data_02);
+
+	}
+}
+
+
+/** Ham chuyen 8 byte thanh so thuc **/
+float Combine_Data(uint8_t Data[8])
+{
+	float RS_nguyen, RS_thap_phan, RS;
+	uint32_t A[4];
+	uint32_t Temp[8] = {0};
+	// Phan nguyen co 24 bit
+	Temp[0] = (uint32_t)((Data[1]<<16)&0xFF0000);
+	Temp[1] = (uint32_t)(Data[2]<<8)&0xFF00;
+	Temp[2] = (uint32_t)(Data[3])&0xFF;
+	A[0] = Temp[0] | Temp[1] | Temp[2];
+	RS_nguyen = (float)A[0] ;
+	// Phan thap phan 32 bit
+	Temp[3] = (uint32_t)((Data[4]<<24)&0xFF000000);
+	Temp[4] = (uint32_t)(Data[5]<<16)&0xFF0000;
+	Temp[5] = (uint32_t)(Data[6]<<8)&0xFF00;
+	Temp[6] = (uint32_t)(Data[7])&0xFF;
+	A[1] = Temp[3] | Temp[4] | Temp[5] | Temp[6];
+	RS_thap_phan = A[1];
+	// Gop 2 phan thap phan va nguyen lai voi nhau
+	RS = RS_nguyen + RS_thap_phan / pow(10,9); // Assuming 32-bit precision for fractional part
+
+	if(Data[0] == 1)
+	{
+		RS = RS * (-1);
+	}
+	return RS;
+}
+
+/** Ham chuyen float thanh 8 byte de Can gui du lieu  **/
+void Float_to_int(float A, uint8_t Data_ALL[8])
+{
+    uint32_t Temp_32[4];
+    int32_t Result[10];
+
+    // Kiem tra gia tri am
+    // Data daaus
+    if (A < 0)
+    {
+        Result[0] = -1;
+        Data_ALL[0] = 1; // Dau am
+        A = -A;
+    }
+    else
+    {
+        Result[0] = 1;
+        Data_ALL[0] = 0; // Dau duong
+    }
+
+    Temp_32[0] = floor(A);  // Phan nguyen
+    Temp_32[1] = (A - (float)Temp_32[0]) * pow(10, 9);  // Phan thap phan
+
+    	// Xu ly phan nguyen
+    	Data_ALL[1] = (Temp_32[0] >> 16)&0xFF;
+    	Data_ALL[2] = (Temp_32[0] >> 8)&0xFF;
+    	Data_ALL[3] = (Temp_32[0])&0xFF;
+    	// Xu ly phan thap phan
+    	Data_ALL[4] =  (Temp_32[1] >> 24)&0xFF;
+    	Data_ALL[5] =  (Temp_32[1] >> 16)&0xFF;
+    	Data_ALL[6] =   (Temp_32[1] >> 8)&0xFF;
+    	Data_ALL[7] =        Temp_32[1]  &0xFF;
+}
+/* USER CODE END 0 */
+
+/**
+  * @brief  The application entry point.
+  * @retval int
+  */
+int main(void)
+{
+  /* USER CODE BEGIN 1 */
+	PID_WL -> Kp = 459.2872592;
+	PID_WL -> Ki = 1494.79277;
+	PID_WL -> Kd = 0;
+	PID_WL -> Kb = 3.254592285;
+	PID_WR -> Kp = 472.7680942;
+	PID_WR -> Ki = 1477.44652;
+	PID_WR -> Kd = 0;
+	PID_WR -> Kb = 3.125098831;
+	// Gan gia tri dau
+	PID_WL->Ui_1 = 0;
+	PID_WR->Ui_1 = 0;
+	PID_WL -> Ud_1 = 0;
+	PID_WR -> Ud_1 = 0;
+	// HIGH LOW PWM
+	PID_WL -> HIGH = 999;
+	PID_WL -> LOW = 0;
+	PID_WR -> HIGH = 999;
+	PID_WR -> LOW = 0;
+// Cac gia tri goc vs vi tri ban dau
+	Kinematic_Matlab_A->theta = 0;
+	Kinematic_Matlab_A->b = 0.0001;
+	Kinematic_Matlab_A->Ratio_WR_WL = 1;
+	Kinematic_Matlab_A->x_Real = 0.0;
+	Kinematic_Matlab_A->y_Real = 0.0;
+  /* USER CODE END 1 */
+
+  /* MCU Configuration--------------------------------------------------------*/
+
+  /* Reset of all peripherals, Initializes the Flash interface and the Systick. */
+  HAL_Init();
+
+  /* USER CODE BEGIN Init */
+  Init_Can_bus();
+  Data_Start[0] = 12;
+  Data_Start[1] = 2;
+  /* USER CODE END Init */
+
+  /* Configure the system clock */
+  SystemClock_Config();
+
+  /* USER CODE BEGIN SysInit */
+
+  /* USER CODE END SysInit */
+
+  /* Initialize all configured peripherals */
+  MX_GPIO_Init();
+  MX_CAN_Init();
+  MX_TIM2_Init();
+  /* USER CODE BEGIN 2 */
+  void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim);
+
+  // *************************  Timer Interrupt   *********************//
+  HAL_TIM_Base_Start_IT(&htim2);   // Timer chinh PID
+
+  // *************************  CAN BUS   *********************//
+  HAL_CAN_Start(&hcan); // Init Can
+  HAL_CAN_ActivateNotification(&hcan, CAN_IT_RX_FIFO0_MSG_PENDING);  // Active Interrupt Mode
+
+
+  // *************************  Khoi tao cac ham  *********************//
+  Initial_Cam_bien(); // Khoi tao cac gia tri cam bien
+  Init_PID();           // Khoi tao cac gia tri Kp, Ki, Kd
+
+
+  HAL_CAN_AddTxMessage(&hcan, &(Can->TX_Header), Data_Start , Can->Mail_box);
+  /* USER CODE END 2 */
+
+  /* Infinite loop */
+  /* USER CODE BEGIN WHILE */
+  while (1)
+  {
+	  if (dirs == 1){
+		  HAL_CAN_AddTxMessage(&hcan, &Can->TX_Header, Data_Start , Can->Mail_box);
+		  HAL_Delay(500);
+	  }
+
+    /* USER CODE END WHILE */
+
+    /* USER CODE BEGIN 3 */
+  }
+  /* USER CODE END 3 */
+}
+
+/**
+  * @brief System Clock Configuration
+  * @retval None
+  */
+void SystemClock_Config(void)
+{
+  RCC_OscInitTypeDef RCC_OscInitStruct = {0};
+  RCC_ClkInitTypeDef RCC_ClkInitStruct = {0};
+
+  /** Initializes the RCC Oscillators according to the specified parameters
+  * in the RCC_OscInitTypeDef structure.
+  */
+  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSE;
+  RCC_OscInitStruct.HSEState = RCC_HSE_ON;
+  RCC_OscInitStruct.HSEPredivValue = RCC_HSE_PREDIV_DIV1;
+  RCC_OscInitStruct.HSIState = RCC_HSI_ON;
+  RCC_OscInitStruct.PLL.PLLState = RCC_PLL_ON;
+  RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSE;
+  RCC_OscInitStruct.PLL.PLLMUL = RCC_PLL_MUL9;
+  if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Initializes the CPU, AHB and APB buses clocks
+  */
+  RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_HCLK|RCC_CLOCKTYPE_SYSCLK
+                              |RCC_CLOCKTYPE_PCLK1|RCC_CLOCKTYPE_PCLK2;
+  RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_PLLCLK;
+  RCC_ClkInitStruct.AHBCLKDivider = RCC_SYSCLK_DIV1;
+  RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV2;
+  RCC_ClkInitStruct.APB2CLKDivider = RCC_HCLK_DIV1;
+
+  if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_2) != HAL_OK)
+  {
+    Error_Handler();
+  }
+}
+
+/**
+  * @brief CAN Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_CAN_Init(void)
+{
+
+  /* USER CODE BEGIN CAN_Init 0 */
+
+  /* USER CODE END CAN_Init 0 */
+
+  /* USER CODE BEGIN CAN_Init 1 */
+
+  /* USER CODE END CAN_Init 1 */
+  hcan.Instance = CAN1;
+  hcan.Init.Prescaler = 10;
+  hcan.Init.Mode = CAN_MODE_NORMAL;
+  hcan.Init.SyncJumpWidth = CAN_SJW_1TQ;
+  hcan.Init.TimeSeg1 = CAN_BS1_3TQ;
+  hcan.Init.TimeSeg2 = CAN_BS2_2TQ;
+  hcan.Init.TimeTriggeredMode = DISABLE;
+  hcan.Init.AutoBusOff = DISABLE;
+  hcan.Init.AutoWakeUp = DISABLE;
+  hcan.Init.AutoRetransmission = DISABLE;
+  hcan.Init.ReceiveFifoLocked = DISABLE;
+  hcan.Init.TransmitFifoPriority = DISABLE;
+  if (HAL_CAN_Init(&hcan) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN CAN_Init 2 */
+
+  /* USER CODE END CAN_Init 2 */
+
+}
+
+/**
+  * @brief TIM2 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_TIM2_Init(void)
+{
+
+  /* USER CODE BEGIN TIM2_Init 0 */
+
+  /* USER CODE END TIM2_Init 0 */
+
+  TIM_ClockConfigTypeDef sClockSourceConfig = {0};
+  TIM_MasterConfigTypeDef sMasterConfig = {0};
+
+  /* USER CODE BEGIN TIM2_Init 1 */
+
+  /* USER CODE END TIM2_Init 1 */
+  htim2.Instance = TIM2;
+  htim2.Init.Prescaler = 719;
+  htim2.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim2.Init.Period = 499;
+  htim2.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+  htim2.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
+  if (HAL_TIM_Base_Init(&htim2) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sClockSourceConfig.ClockSource = TIM_CLOCKSOURCE_INTERNAL;
+  if (HAL_TIM_ConfigClockSource(&htim2, &sClockSourceConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
+  sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
+  if (HAL_TIMEx_MasterConfigSynchronization(&htim2, &sMasterConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN TIM2_Init 2 */
+
+  /* USER CODE END TIM2_Init 2 */
+
+}
+
+/**
+  * @brief GPIO Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_GPIO_Init(void)
+{
+/* USER CODE BEGIN MX_GPIO_Init_1 */
+/* USER CODE END MX_GPIO_Init_1 */
+
+  /* GPIO Ports Clock Enable */
+  __HAL_RCC_GPIOD_CLK_ENABLE();
+  __HAL_RCC_GPIOA_CLK_ENABLE();
+
+/* USER CODE BEGIN MX_GPIO_Init_2 */
+/* USER CODE END MX_GPIO_Init_2 */
+}
+
+/* USER CODE BEGIN 4 */
+// Ngat Timer PID
+void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
+{
+	if (htim -> Instance == TIM2)
+	{
+
+// Sai số điểm hàn theo phương X vs Y
+	EX_Test = ( SS->xA - Kinematic_Matlab_A->x_welding_Real);
+	EY_Test = ( SS->yA - Kinematic_Matlab_A->y_welding_Real);
+	EXY_2 = pow(EX_Test,2) + pow(EY_Test,2);
+	Error_X -> ek = sqrt(EXY_2);
+
+// PID Góc theta
+	// �?i�?u kiện để đổi bộ PID
+		// PID theta bám vị trí XY
+		if(Error_X -> ek >= 0.035)
+		{
+			SS->theta_XY = atan2((SS->A1_MET - 0.35), 0.135);
+			Fake_Error_Y = (SS->theta_XY);
+			Error_Y -> ek = Fake_Error_Y;
+			//Error_Y -> ek = (SS->theta_XY);
+			PID_Y->Kp = PID_t->Kp_D * PID_t->Cv;
+			PID_Y->Ki = PID_t->Ki_D * PID_t->Cv;
+			PID_Y->Kd = PID_t->Kd_D * PID_t->Cv;
+//			// �?i�?u kiện khi góc theta thay đổi âm dương liên tục
+//			if(SS->Khoang_cach_A1 > 580.0)
+//			{
+//				PID_Y->Kp = 0.015;
+//			}
+
+//			// Dieu kien quay goc duong am
+//			if(SS->A1_MET < SS->A2_MET)
+//			{
+//				Error_Y -> ek = -Fake_Error_Y;
+//			}
+//			else if(SS->A1_MET >= SS->A2_MET)
+//			{
+//				Error_Y -> ek = Fake_Error_Y;
+//			}
+		}
+
+		// PID theta bám song song với tư�?ng
+		else if(Error_X -> ek < 0.035)
+		{
+			Error_Y -> ek = (SS->Theta_Sensor);
+			PID_Y->Kp = PID_t->Kp_Parallel;
+			PID_Y->Ki = PID_t->Ki_Parallel;
+			PID_Y->Kd = PID_t->Kd_Parallel;
+		}
+
+	// Thực thi bộ PID theta
+	PID_Y -> Up =  PID_Y -> Kp * Error_Y -> ek;
+	PID_Y -> Ui = PID_Y -> Ui_1 + PID_Y -> Ki * Error_Y -> ek_1 * Time_Interrupt;
+	//PID_Y -> Ui_Antiwindup;
+	PID_Y -> Ud = PID_Y -> Kd * (Error_Y -> ek - Error_Y -> ek_1)/Time_Interrupt;
+	// Antiwindup
+	//PID_Y -> Ui_Antiwindup = Anti_Windup(PID_Y -> Temp_PWM, HIGH_Limit_PWM, LOW_Limit_PWM, Kb);
+	PID_Y -> Out_fPWM = PID_Y -> Up + PID_Y -> Ui + PID_Y -> Ud;
+	// Gan lai gia tri
+	Error_Y -> ek_1 = Error_Y -> ek;
+	PID_Y -> Ui_1 = PID_Y -> Ui;
+	PID_Y -> Ud_1 = PID_Y -> Ud;
+
+
+// Vận tốc và Omega W
+	// Cập nhật vận tốc
+	Kinematic_Matlab_A->vel = V_counst;
+	// Hệ số Cv thay đổi theo vận tốc
+	PID_t->Cv = (Kinematic_Matlab_A->vel/(V_max));
+	// Cập nhật Omega
+	Kinematic_Matlab_A->w = PID_Y -> Out_fPWM;
+
+// Tốc bộ bánh xe
+	// Cập nhật WR vs WL theo PID
+	SP_WR_Fake = (Kinematic_Matlab_A->vel/R_Wheles) + (Kinematic_Matlab_A->w)/(R_Wheles*Khoang_tam_den_banh);
+	SP_WL_Fake = (Kinematic_Matlab_A->vel/R_Wheles) - (Kinematic_Matlab_A->w)/(R_Wheles*Khoang_tam_den_banh);
+
+	/****************************************************************/
+	// Banh trai chay theo banh phai
+	if(SP_WR_Fake == 0)
+	{
+		PID_WL->Ti_le_WR_WL = 0;
+
+	}
+	else if(SP_WR_Fake != 0)
+	{
+		PID_WL->Ti_le_WR_WL = SP_WL_Fake / SP_WR_Fake;
+	}
+
+	if(WR_RPM == 0)
+	{
+		SP_WL_Fake_2 = SP_WL_Fake;
+	}
+	else if(WR_RPM != 0)
+	{
+		SP_WL_Fake_2 = PID_WL->Ti_le_WR_WL * WR_RPM;
+	}
+	/****************************************************************/
+
+	// Limit output PID vị trí
+	if(SP_WR_Fake >= WRL_Max)
+	{
+		SP_WR_Fake = WRL_Max;
+	}
+	else if(SP_WR_Fake <= -WRL_Max)
+	{
+		SP_WR_Fake = -WRL_Max;
+	}
+	if(SP_WL_Fake >= WRL_Max)
+	{
+		SP_WL_Fake = WRL_Max;
+	}
+	else if(SP_WL_Fake <= -WRL_Max)
+	{
+		SP_WL_Fake = -WRL_Max;
+	}
+
+//	// �?ổi chi�?u chân dir khi âm
+//	if(SP_WL_Fake < 0)
+//	{
+//		Tien_lui_DC_RIGHT(-1);   // Tien la 1 Lui la -1
+//		SP_WL = -SP_WL_Fake;
+//		RPM_WL_Math = -WL_RPM;
+//	}
+//	else if(SP_WL_Fake >= 0)
+//	{
+//		Tien_lui_DC_RIGHT(1);
+//		SP_WL = SP_WL_Fake;
+//		RPM_WL_Math = WL_RPM;
+//	}
+//	if(SP_WR_Fake < 0)
+//	{
+//		Tien_lui_DC_LEFT(-1);
+//		SP_WR = -SP_WR_Fake;
+//		RPM_WR_Math = -WR_RPM;
+//	}
+//	else if(SP_WR_Fake >= 0)
+//	{
+//		Tien_lui_DC_LEFT(1);
+//		SP_WR = SP_WR_Fake;
+//		RPM_WR_Math = WR_RPM;
+//	}
+
+/*
+// PID bánh xe
+	// Cập nhật Encoder
+	Encoder_B = __HAL_TIM_GET_COUNTER(&htim2);
+	// Lấy chênh lệch 2 khoảng Encoder
+	delta_B = abs(Encoder_B - Encoder_B_Pre);
+	// Nếu giá trị chênh lẹch lớn hơn nữa số xung nữa vòng là vô lý nên lấy giá trị tràn trừ cho chênh lệch
+	if (delta_B  >= __HAL_TIM_GET_AUTORELOAD(&htim2) / 2)
+	{
+		delta_B = __HAL_TIM_GET_AUTORELOAD(&htim2) - delta_B;
+	}
+	//Tính giá trị RPM hiện tại
+	RPM_Avg_WR = ((delta_B) / (Pulse_Per_Round * 4 * Time_Interrupt) * 60)* GT_Convert_radian * 0.5;  // Nhan voi TST
+	// Tính trung bình
+	WR_RPM = Average_5_times(RPM_Avg_WR, sum_B);
+	// �?�?c Encoder A
+	Encoder_A = __HAL_TIM_GET_COUNTER(&htim3);
+	// Lấy chênh lệch 2 khoảng Encoder
+	delta_A = abs(Encoder_A - Encoder_A_Pre);
+	// Nếu giá trị chênh lẹch lớn hơn nữa số xung nữa vòng là vô lý nên lấy giá trị tràn trừ cho chênh lệch
+	if (delta_A  >= __HAL_TIM_GET_AUTORELOAD(&htim3) / 2)
+	{
+		delta_A = __HAL_TIM_GET_AUTORELOAD(&htim3) - delta_A;
+	}
+	//Tính giá trị RPM hiện tại
+	RPM_Avg_WL = ((delta_A) / (Pulse_Per_Round * 4 * Time_Interrupt) * 60) * GT_Convert_radian * 0.5;   // Nhan voi TST
+	// Tính trung bình
+	WL_RPM = Average_5_times(RPM_Avg_WL, sum_A);
+*/
+
+	// PID controller
+	//Error_WL -> ek = (SP_WL - WL_RPM);
+	Error_WL -> ek = (SP_WL_Fake_2 - WL_RPM);
+	Error_WR -> ek = (SP_WR - WR_RPM);
+
+	// Kenh A
+	PID_WL -> Up =  PID_WL -> Kp * Error_WL -> ek;
+	PID_WL -> Ui = PID_WL -> Ui_1 + PID_WL -> Ki * Error_WL -> ek_1 * Time_Interrupt + PID_WL -> Ui_Antiwindup;
+	PID_WL -> Ud = PID_WL -> Ud_1 * (Error_WL -> ek - Error_WL -> ek_1);
+	// Antiwindup
+	PID_WL -> Ui_Antiwindup = Anti_Windup(PID_WL -> Temp_PWM, HIGH_Limit_PWM, LOW_Limit_PWM, PID_WL->Kb);
+	PID_WL -> Temp_PWM = PID_WL -> Up + PID_WL -> Ui + PID_WL -> Ud;
+	PID_WL -> Out_PWM = round(PID_WL -> Temp_PWM);
+
+		if(PID_WL -> Out_PWM >= 999)
+		{
+			PID_WL -> Out_PWM = 999;
+		}
+		else if (PID_WL -> Out_PWM <=0 )
+		{
+			PID_WL -> Out_PWM = 0;
+		}
+
+	// Kenh B
+		PID_WR -> Up =  PID_WR -> Kp * Error_WR -> ek;
+		PID_WR -> Ui = PID_WR -> Ui_1 + PID_WR -> Ki * Error_WR -> ek_1 * Time_Interrupt + PID_WR -> Ui_Antiwindup;
+		PID_WR -> Ud = PID_WR -> Ud_1 * (Error_WR -> ek - Error_WR -> ek_1);
+		PID_WR -> Temp_PWM = PID_WR -> Up + PID_WR -> Ui + PID_WR -> Ud;
+	// Antiwindup
+		PID_WR -> Ui_Antiwindup = Anti_Windup(PID_WR -> Temp_PWM, HIGH_Limit_PWM, LOW_Limit_PWM, PID_WR->Kb);
+		PID_WR -> Out_PWM = round(PID_WR -> Temp_PWM);
+		if(PID_WR -> Out_PWM >= 999)
+		{
+			PID_WR -> Out_PWM = 999;
+		}
+		else if (PID_WR -> Out_PWM <=0 )
+		{
+			PID_WR -> Out_PWM = 0;
+		}
+
+
+		// Gan lai gia tri
+		Error_WL -> ek_1 = Error_WL -> ek;
+		Error_WR -> ek_1 = Error_WR -> ek;
+		PID_WL -> Ui_1 = PID_WL -> Ui;
+		PID_WR -> Ui_1 = PID_WR -> Ui;
+		PID_WL -> Ud_1 = PID_WL -> Ud;
+		PID_WR -> Ud_1 = PID_WR -> Ud;
+//
+		Encoder_A_Pre = Encoder_A;
+		Encoder_B_Pre = Encoder_B;
+
+// Tính động h�?c thuận và cập nhật vị trí
+	// �?ộng h�?c thuận
+	Forward_Kinematic(RPM_WR_Math, RPM_WL_Math, Kinematic_Matlab_A);
+
+	// Cập nhật giá trị theo tích phân
+	Kinematic_Matlab_A->x_Real = Kinematic_Matlab_A->x_Real + Kinematic_Matlab_A->x_dot_Real * Time_Interrupt;
+	Kinematic_Matlab_A->y_Real = Kinematic_Matlab_A->y_Real  + Kinematic_Matlab_A->y_dot_Real * Time_Interrupt;
+
+	// Diem han
+	Kinematic_Matlab_A->x_welding_Real = Kinematic_Matlab_A->x_Real + 0.111*cos(Kinematic_Matlab_A->theta) - 0.55*sin(Kinematic_Matlab_A->theta);
+	Kinematic_Matlab_A->y_welding_Real = Kinematic_Matlab_A->y_Real + 0.55*cos(Kinematic_Matlab_A->theta) + 0.111*sin(Kinematic_Matlab_A->theta);
+
+	// Quy ve he MM
+	Kinematic_Matlab_A->x_mm_Real = Kinematic_Matlab_A->x_Real * 1000;
+	Kinematic_Matlab_A->y_mm_Real = Kinematic_Matlab_A->y_Real * 1000;
+
+	//   ********************************* Truyen du lieu CAN BUS***************************************  //
+	PWM_WR =(float)PID_WR -> Out_PWM;
+	PWM_WL =(float)PID_WL -> Out_PWM;
+	// Chuyen float sang int
+	Float_to_int(PWM_WR, Data_WR);
+	Float_to_int(PWM_WR, Data_WL);
+	// Lenh truyen du lieu
+//	HAL_CAN_AddTxMessage(&hcan, &Can->TX_Header, Data_WR , Can->Mail_box);
+//	HAL_CAN_AddTxMessage(&hcan, &Can->TX_Header, Data_WL , Can->Mail_box);
+//	// Bit Start
+//	Data_Start[0] = 0xA5;
+//	Data_Start[1] = 0xA9;
+//	HAL_CAN_AddTxMessage(&hcan, &Can->TX_Header, Data_Start , Can->Mail_box);
+
+	// Cap nhat thoi gian dem
+	Time_Total = Time_Total + Time_Interrupt;
+
+	}
+
+
+
+
+}
+/* USER CODE END 4 */
+
+/**
+  * @brief  This function is executed in case of error occurrence.
+  * @retval None
+  */
+void Error_Handler(void)
+{
+  /* USER CODE BEGIN Error_Handler_Debug */
+  /* User can add his own implementation to report the HAL error return state */
+  __disable_irq();
+  while (1)
+  {
+  }
+  /* USER CODE END Error_Handler_Debug */
+}
+
+#ifdef  USE_FULL_ASSERT
+/**
+  * @brief  Reports the name of the source file and the source line number
+  *         where the assert_param error has occurred.
+  * @param  file: pointer to the source file name
+  * @param  line: assert_param error line source number
+  * @retval None
+  */
+void assert_failed(uint8_t *file, uint32_t line)
+{
+  /* USER CODE BEGIN 6 */
+  /* User can add his own implementation to report the file name and line number,
+     ex: printf("Wrong parameters value: file %s on line %d\r\n", file, line) */
+  /* USER CODE END 6 */
+}
+#endif /* USE_FULL_ASSERT */
